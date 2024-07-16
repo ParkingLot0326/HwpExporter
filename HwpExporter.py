@@ -259,6 +259,7 @@ class HwpConverter:
 
         adjusted_range_list = range_list[current_range_index:]
         adjusted_range_list[0] = self.current_page
+        self.current_page = 1
         logging.warning(f"adjusted range list : {adjusted_range_list}")
 
         for i in range(0, len(adjusted_range_list), 2):
