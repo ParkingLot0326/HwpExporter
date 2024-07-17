@@ -4,7 +4,6 @@ import re
 import json
 import threading
 import logging
-from collections import OrderedDict
 
 import win32com.client as win32
 from pyhwpx import Hwp
@@ -12,7 +11,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 # Constants
-VERSION = "0.1.0"
+VERSION = "0.1.2"
 IS_STABLE = False
 
 DATA_DIR = "data"
@@ -47,6 +46,8 @@ class HwpConverter:
     
     def setup_logging(self):
         logging.basicConfig(filename=LOG_FILE,level=logging.INFO,format='%(asctime)s - %(levelname)s - %(message)s',encoding="utf-8")
+        logging.info("")
+        logging.info("")
         logging.info(f"Program Started; Current Version is: {VERSION}")
 
     def reset_state(self):
@@ -71,7 +72,7 @@ class HwpConverter:
     def open_hwp_file(self):
         try:
             if self.file:
-                self.hwp = Hwp(visible=not self.settings['isHwpVisible'], new=False)
+                self.hwp = Hwp(visible=not self.settings['isHwpVisible'], new=False, register_module="./FilePathCheckeModule.dll")
                 self.hwp.open(self.file)
                 logging.info("HWP file Opened Successfully.")
             else:
@@ -260,50 +261,58 @@ class HwpConverter:
             raise Exception("Re-arranging Excel failed.")
     
     def resume_extraction(self, range_list, update_progress_callback):
-        if self.cancel_extraction:
-            logging.info("Extraction cancelled during resume_extraction")
-            return
+        for trial in range(1,4):
+            self.wb.Save()
+            self.close_hwp_file()
 
-        update_progress_callback(status=f"Re-Trying extraction from page {self.current_page}...")
-        logging.info(f"Retrying extraction from page {self.current_page}")
-        time.sleep(1)
-        self.open_hwp_file()
-        self.ctrl = self.hwp.HeadCtrl
-
-        current_range_index = next((i for i in range(0, len(range_list), 2) if range_list[i] <= self.current_page <= range_list[i+1]), None)
-
-        adjusted_range_list = range_list[current_range_index:]
-        adjusted_range_list[0] = self.current_page
-        self.current_page = 1
-        logging.warning(f"adjusted range list : {adjusted_range_list}")
-        
-        self.ws.Range(f"A{self.row_index + 40}").Select()
-        for i in range(0, len(adjusted_range_list), 2):
             if self.cancel_extraction:
-                logging.info("Extraction cancelled during go_to_start_page")
-                break
+                logging.info("Extraction cancelled during resume_extraction")
+                return
 
-            initial_page = adjusted_range_list[i]
-            end_page = adjusted_range_list[i+1] if i+1 < len(range_list) else 10000
+            update_progress_callback(status=f"Re-Trying extraction from page {self.current_page}...")
+            logging.info(f"Retrying extraction from page {self.current_page}")
+            time.sleep(1)
+            self.open_hwp_file()
+            self.ctrl = self.hwp.HeadCtrl
 
-            if i == 0:
-                pass
-            else:
-                self.ws = self.wb.Worksheets.Add()
+            current_range_index = next((i for i in range(0, len(range_list), 2) if range_list[i] <= self.current_page <= range_list[i+1]), None)
 
-            update_progress_callback(status=f"Extracting sheets...{i//2 + 1}/{(len(adjusted_range_list)+1)//2}")
-            logging.info(f"Extracting Sheet #{i//2+1}")
+            adjusted_range_list = range_list[current_range_index:]
+            adjusted_range_list[0] = self.current_page
+            self.current_page = 1
+            logging.warning(f"adjusted range list : {adjusted_range_list}")
+            
+            self.ws.Range(f"A{self.row_index + 40}").Select()
+            for i in range(0, len(adjusted_range_list), 2):
+                if self.cancel_extraction:
+                    logging.info("Extraction cancelled during go_to_start_page")
+                    break
 
-            update_progress_callback(status=f"Moving to start page {initial_page}...")
-            self.go_to_start_page(initial_page)
-        try:
-            update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
-            logging.info(f"Exporting Pages {initial_page}~{end_page}")
-            self.copy_paste_to_endpage(end_page, update_progress_callback)
-        except Exception as e:
-            logging.error(f"Retry failed: {e}")
-            update_progress_callback(status="Failed Resuming... Please Retry extracting.")
-            raise Exception("Failed Resuming... Please Retry extracting.")
+                initial_page = adjusted_range_list[i]
+                end_page = adjusted_range_list[i+1] if i+1 < len(range_list) else 10000
+
+                if i == 0:
+                    pass
+                else:
+                    self.ws = self.wb.Worksheets.Add()
+
+                update_progress_callback(status=f"Extracting sheets...{i//2 + 1}/{(len(adjusted_range_list)+1)//2}")
+                logging.info(f"Extracting Sheet #{i//2+1}")
+
+                update_progress_callback(status=f"Moving to start page {initial_page}...")
+                self.go_to_start_page(initial_page)
+            try:
+                update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
+                logging.info(f"Exporting Pages {initial_page}~{end_page}")
+                self.copy_paste_to_endpage(end_page, update_progress_callback)
+            except Exception as e:
+                if trial != 3 :
+                    logging.error(f"Retry failed #{trial}: {e}")
+                    pass
+                else:
+                    logging.error(f"Retry failed #{trial}: {e}")
+                    update_progress_callback(status="Failed Resuming... Please Retry extracting.")
+                    raise Exception("Failed Resuming... Please Retry extracting.")
         
     def prepare_extraction(self):
         self.reset_state()
@@ -343,8 +352,6 @@ class HwpConverter:
             logging.info(f"Exporting Pages {initial_page}~{end_page}")
             self.copy_paste_to_endpage(end_page, update_progress_callback)
         except:
-            self.wb.Save()
-            self.close_hwp_file()
             self.resume_extraction(range_list,update_progress_callback)
             
         if self.wb != None : 
