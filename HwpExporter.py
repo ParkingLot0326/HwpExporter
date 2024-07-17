@@ -12,17 +12,17 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 # Constants
-VERSION = "0.0.6a"
+VERSION = "0.1.0"
 IS_STABLE = False
 
 DATA_DIR = "data"
 SETTINGS_FILE = os.path.join(DATA_DIR,'settings.json')
 LOG_FILE = os.path.join(DATA_DIR,'hwp_converter.log')
 DEFAULT_SETTINGS = {
-    "isHwpVisible": False,
+    "isHwpVisible": True,
     "doOpenHwp": True,
     "doOpenXlsx": True,
-    "copyPasteDelay" : 0.2
+    "copyPasteDelay" : 0.1
 }
 
 class HwpConverter:
@@ -37,7 +37,6 @@ class HwpConverter:
         self.excel = None
         self.wb = None
         self.ws = None
-        self.row_index = 1
         self.cancel_extraction = False
         self.setup_logging()
 
@@ -150,9 +149,9 @@ class HwpConverter:
                         self.current_page = self.temp_cur_page
                 self.hwp.goto_page(self.current_page)
 
-                if self.cancel_extraction:
-                    logging.info("Extraction cancelled during go_to_start_page")
-                    return
+            if self.cancel_extraction:
+                logging.info("Extraction cancelled during go_to_start_page")
+                return
 
             logging.info(f"Moved to Start Page {self.current_page}")
         except Exception as e:
@@ -176,15 +175,23 @@ class HwpConverter:
             raise Exception("Paste failed: Nothing on Clipboard.")
 
     def copy_paste_to_endpage(self, end_page, update_progress_callback):
+        if self.cancel_extraction:
+            logging.info("Extraction cancelled before copy-paste")
+            return
+    
+        row_index = 1
         logging.info("Copy-Paste Started")
         while end_page > self.current_page:
+            if self.cancel_extraction:
+                logging.info("Extraction cancelled during pre-copy")
+                break       
             if self.ctrl is None:
                 break
             if self.ctrl.CtrlID == "tbl":
                 for attempt in range(1, 6):
                     if self.cancel_extraction:
                         logging.info("Extraction cancelled during copy_paste_to_endpage")
-                        return
+                        break
                     try:
                         self.copy_paste_action()
                         self.exported_pages += 1
@@ -197,13 +204,16 @@ class HwpConverter:
                             raise Exception(f"Failed to copy-paste after 5 attempts: {e}")
                         time.sleep(0.3)
 
+                if self.cancel_extraction:
+                    logging.info("Extraction cancelled before excel offset")
+                    return
+    
                 try:
-                    # self.hwp.FindCtrl()
                     self.hwp.HAction.Run("ShapeObjTableSelCell")
                     row_num = self.hwp.get_row_num()
                     self.hwp.HAction.Run("Cancel")
-                    self.row_index += row_num + 8
-                    self.ws.Range(f"A{self.row_index}").Select()
+                    row_index += row_num + 8
+                    self.ws.Range(f"A{row_index}").Select()
                 except Exception as e:
                     self.close_excel_file()
                     logging.error(f"Row Calculation failed: {e}")
@@ -249,6 +259,10 @@ class HwpConverter:
             raise Exception("Re-arranging Excel failed.")
     
     def resume_extraction(self, range_list, update_progress_callback):
+        if self.cancel_extraction:
+            logging.info("Extraction cancelled during resume_extraction")
+            return
+
         update_progress_callback(status=f"Re-Trying extraction from page {self.current_page}...")
         logging.info(f"Retrying extraction from page {self.current_page}")
         time.sleep(1)
@@ -261,9 +275,13 @@ class HwpConverter:
         adjusted_range_list[0] = self.current_page
         self.current_page = 1
         logging.warning(f"adjusted range list : {adjusted_range_list}")
-
+        
         self.ws.Range(f"A{self.row_index + 40}").Select()
         for i in range(0, len(adjusted_range_list), 2):
+            if self.cancel_extraction:
+                logging.info("Extraction cancelled during go_to_start_page")
+                break
+
             initial_page = adjusted_range_list[i]
             end_page = adjusted_range_list[i+1] if i+1 < len(range_list) else 10000
 
@@ -277,14 +295,14 @@ class HwpConverter:
 
             update_progress_callback(status=f"Moving to start page {initial_page}...")
             self.go_to_start_page(initial_page)
-            try:
-                update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
-                logging.info(f"Exporting Pages {initial_page}~{end_page}")
-                self.copy_paste_to_endpage(end_page, update_progress_callback)
-            except Exception as e:
-                logging.error(f"Retry failed: {e}")
-                update_progress_callback(status="Failed Resuming... Please Retry extracting.")
-                raise Exception("Failed Resuming... Please Retry extracting.")
+        try:
+            update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
+            logging.info(f"Exporting Pages {initial_page}~{end_page}")
+            self.copy_paste_to_endpage(end_page, update_progress_callback)
+        except Exception as e:
+            logging.error(f"Retry failed: {e}")
+            update_progress_callback(status="Failed Resuming... Please Retry extracting.")
+            raise Exception("Failed Resuming... Please Retry extracting.")
         
     def prepare_extraction(self):
         self.reset_state()
@@ -296,7 +314,6 @@ class HwpConverter:
     def extract_tables(self, range_list, update_progress_callback):
         
         self.prepare_extraction()
-        time.sleep(0.5)
 
         self.total_pages = sum(range_list[i+1] - range_list[i] + 1 for i in range(0, len(range_list), 2))
         self.exported_pages = 0
@@ -320,17 +337,18 @@ class HwpConverter:
 
             update_progress_callback(status=f"Moving to start page {initial_page}...")
             self.go_to_start_page(initial_page)
-            time.sleep(0.3)
-            try:
-                update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
-                logging.info(f"Exporting Pages {initial_page}~{end_page}")
-                self.copy_paste_to_endpage(end_page, update_progress_callback)
-            except:
-                self.close_hwp_file()
-                self.wb.Save()
-                self.resume_extraction(range_list,update_progress_callback)
+        try:
+            update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
+            logging.info(f"Exporting Pages {initial_page}~{end_page}")
+            self.copy_paste_to_endpage(end_page, update_progress_callback)
+        except:
+            self.wb.Save()
+            self.close_hwp_file()
+            self.resume_extraction(range_list,update_progress_callback)
+            
+        if self.wb != None : 
+            self.wb.Save()
 
-        self.wb.Save()
         if not self.cancel_extraction:
             update_progress_callback(status="Rearranging Excel...")
             self.rearrange_excel()
@@ -338,18 +356,21 @@ class HwpConverter:
             logging.info("Exportation Successful.")
             update_progress_callback(progress=100, status="Export Completed.")
         else:
-            logging.info("Extraction cancelled, partial results saved.")
-    
-        if self.settings["doOpenHwp"]:
-            self.hwp.set_visible(visible=True)
-        else:
-            self.close_hwp_file()            
-
-        if self.settings["doOpenXlsx"]:
-            self.excel.Visible = True
-        else:
             self.close_excel_file()
+            logging.info("Extraction cancelled, partial results saved.")
+            
+        if not self.cancel_extraction : 
+            if self.settings["doOpenHwp"]:
+                self.hwp.set_visible(visible=True)
+            else:
+                self.close_hwp_file()            
 
+            if self.settings["doOpenXlsx"]:
+                self.excel.Visible = True
+            else:
+                self.close_excel_file()
+
+        self.current_page = 1
         logging.info("Page Resetted to 1")
 
 class GUI:
@@ -486,15 +507,17 @@ class GUI:
     def start_extraction(self):
         self.is_extracting = True
         self.extract_btn.config(text="취소")
-        self.extraction_thread = threading.Thread(target=self.run_extraction, daemon=True).start()
+        self.extraction_thread = threading.Thread(target=self.run_extraction, daemon=True)
+        self.extraction_thread.start()
 
     def cancel_extraction(self):
+        print("cancel")
         if self.extraction_thread and self.extraction_thread.is_alive():
             self.is_extracting = False
             self.converter.cancel_extraction = True
             self.extract_btn.config(state=tk.DISABLED)
             self.update_progress(status="Cancelling extraction...")
-            self.extraction_thread.join(timeout=5)  # Wait for the thread to finish
+            self.extraction_thread.join(timeout=3)  # Wait for the thread to finish
             if self.extraction_thread.is_alive():
                 logging.warning("Extraction thread did not finish in time")
             self.converter.close_hwp_file()
@@ -510,18 +533,18 @@ class GUI:
 
             self.update_progress(progress=0, status="Starting extraction process...")
             self.converter.extract_tables(range_list, self.update_progress)
-
-            messagebox.showinfo("추출 완료", "표 추출이 성공적으로 완료되었습니다.")
+            
+            if self.converter.cancel_extraction :
+                messagebox.showinfo("추출 취소","표 추출이 취소되었습니다.")
+            else:
+                messagebox.showinfo("추출 완료", "표 추출이 완료되었습니다.")
             self.update_progress(progress=0, status="...")
         except Exception as e:
             self.update_progress(status=f"Error: {str(e)}")
-            self.converter.close_excel_file()
-            self.converter.close_hwp_file()
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
-        finally:            
+        finally:
             self.is_extracting = False
             self.extract_btn.config(text="추출", state=tk.NORMAL)
-            self.converter.reset_state()
             self.converter.cancel_extraction = False
 
     def run(self):
