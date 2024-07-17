@@ -37,6 +37,7 @@ class HwpConverter:
         self.excel = None
         self.wb = None
         self.ws = None
+        self.row_index = 1
         self.cancel_extraction = False
         self.setup_logging()
 
@@ -178,8 +179,8 @@ class HwpConverter:
         if self.cancel_extraction:
             logging.info("Extraction cancelled before copy-paste")
             return
-    
-        row_index = 1
+        
+        
         logging.info("Copy-Paste Started")
         while end_page > self.current_page:
             if self.cancel_extraction:
@@ -212,8 +213,8 @@ class HwpConverter:
                     self.hwp.HAction.Run("ShapeObjTableSelCell")
                     row_num = self.hwp.get_row_num()
                     self.hwp.HAction.Run("Cancel")
-                    row_index += row_num + 8
-                    self.ws.Range(f"A{row_index}").Select()
+                    self.row_index += row_num + 8
+                    self.ws.Range(f"A{self.row_index}").Select()
                 except Exception as e:
                     self.close_excel_file()
                     logging.error(f"Row Calculation failed: {e}")
