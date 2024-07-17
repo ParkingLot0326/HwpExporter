@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 # Constants
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 IS_STABLE = False
 
 DATA_DIR = "data"
@@ -78,7 +78,8 @@ class HwpConverter:
             else:
                 logging.warning("Hwp File Not Selected on GUI")
                 raise ValueError("No file selected")
-        except:
+        except Exception as e:
+            logging.error(e)
             raise
 
     def close_hwp_file(self):
@@ -260,6 +261,51 @@ class HwpConverter:
             logging.error(f"Re-arranging failed: {e}")
             raise Exception("Re-arranging Excel failed.")
     
+    def is_number(self,cell_value):
+        try:
+            float(cell_value)
+            return True
+        except:
+            return False
+    
+    def rearrange_demos(self) :
+        try:
+            for sheet in self.wb.Worksheets:
+                used_range = sheet.UsedRange
+                total_used_row = used_range.Rows.Count
+
+                row = 1
+                while row <= total_used_row : 
+                    if sheet.Cells(row,1).Value is None :
+                        row += 1
+                    else:
+                        table = sheet.Cells(row,1).CurrentRegion                
+                        table_row = table.Rows.Count
+                        table_column = table.Columns.Count
+                        
+                        for cell in table :
+                            if cell.MergeCells:
+                                cell.UnMerge()
+                        
+                        right_column = sheet.Range(sheet.Cells(row,table_column),sheet.Cells(row+table_row-1,table_column))
+                        if all((not self.is_number(str(cell.Value))) or cell.Value is None for cell in right_column) :
+                            print("demo")
+                            demo_value = right_column.Value
+                            dest = sheet.Range(table.Offset(1,2),table.Offset(table_row,table_column+1))
+                            dest.Value = table.Value
+                            new_demo = sheet.Range(table.Offset(1,1),table.Offset(table_row,1))
+                            new_demo.Value = demo_value
+                            sheet.Range(table.Offset(1,table_column+1),table.Offset(table_row,table_column+1)).Value = ""
+                            
+                        else:
+                            pass
+                        row += table_row
+
+        except Exception as e:
+            logging.error(f"Re-arranging Demo failed: {e}")
+            raise Exception("Re-arranging Excel failed.")
+        
+
     def resume_extraction(self, range_list, update_progress_callback):
         for trial in range(1,4):
             self.wb.Save()
@@ -271,7 +317,7 @@ class HwpConverter:
 
             update_progress_callback(status=f"Re-Trying extraction from page {self.current_page}...")
             logging.info(f"Retrying extraction from page {self.current_page}")
-            time.sleep(1)
+            time.sleep(0.5)
             self.open_hwp_file()
             self.ctrl = self.hwp.HeadCtrl
 
@@ -282,7 +328,8 @@ class HwpConverter:
             self.current_page = 1
             logging.warning(f"adjusted range list : {adjusted_range_list}")
             
-            self.ws.Range(f"A{self.row_index + 40}").Select()
+            self.row_index += 40
+            self.ws.Range(f"A{self.row_index}").Select()
             for i in range(0, len(adjusted_range_list), 2):
                 if self.cancel_extraction:
                     logging.info("Extraction cancelled during go_to_start_page")
@@ -360,6 +407,8 @@ class HwpConverter:
         if not self.cancel_extraction:
             update_progress_callback(status="Rearranging Excel...")
             self.rearrange_excel()
+            update_progress_callback(status="Rearranging Demo...")
+            self.rearrange_demos()
             self.wb.Save()
             logging.info("Exportation Successful.")
             update_progress_callback(progress=100, status="Export Completed.")
@@ -517,6 +566,8 @@ class GUI:
         self.extract_btn.config(text="취소")
         self.extraction_thread = threading.Thread(target=self.run_extraction, daemon=True)
         self.extraction_thread.start()
+        time.sleep(3)
+        self.extract_btn.config(state="normal")
 
     def cancel_extraction(self):
         print("cancel")
@@ -531,7 +582,6 @@ class GUI:
             self.converter.close_hwp_file()
             self.converter.close_excel_file()
             self.update_progress(status="Extraction cancelled")
-            self.extract_btn.config(text="추출", state=tk.NORMAL)
 
     def run_extraction(self):
         try:
@@ -544,6 +594,7 @@ class GUI:
             
             if self.converter.cancel_extraction :
                 messagebox.showinfo("추출 취소","표 추출이 취소되었습니다.")
+                self.extract_btn.config(text="추출", state=tk.NORMAL)
             else:
                 messagebox.showinfo("추출 완료", "표 추출이 완료되었습니다.")
             self.update_progress(progress=0, status="...")
