@@ -100,11 +100,12 @@ class HwpConverter:
             save_file = self.get_unique_filename(filename=save_file)
             
             self.excel = win32.gencache.EnsureDispatch("Excel.Application")
-            self.excel.Visible = False
+            self.excel.Visible = True
             self.wb = self.excel.Workbooks.Add()
             self.wb.SaveAs(save_file)
             self.excel.Quit()
             self.wb = self.excel.Workbooks.Open(save_file)
+            logging.info("Excel opened.")
         except Exception as e:
             logging.error(f"Creating New Excel file failed : {e}")
             raise Exception("Opening Excel failed.")
@@ -162,26 +163,29 @@ class HwpConverter:
             raise Exception("Moving to Start page Failed.")
             
     def copy_paste_action(self):
-        self.hwp.SetPosBySet(self.ctrl.GetAnchorPos(0))
-        self.current_page = self.hwp.current_page
-        self.hwp.FindCtrl()
-        time.sleep(self.settings["copyPasteDelay"]/2)
-        self.hwp.Copy()
-        time.sleep(self.settings["copyPasteDelay"]/2)
-        
-        self.ws.Activate()
-        if self.excel.ClipboardFormats:
-            self.excel.ActiveSheet.Paste()
-            logging.info(f"Paste Successful. current Page: {self.current_page}")
-        else:
-            logging.warning(f"Paste failed - nothing on Clipboard. current Page : {self.current_page}")
-            raise Exception("Paste failed: Nothing on Clipboard.")
+        try:
+            self.hwp.SetPosBySet(self.ctrl.GetAnchorPos(0))
+            self.current_page = self.hwp.current_page
+            self.hwp.FindCtrl()
+            time.sleep(self.settings["copyPasteDelay"]/2)
+            self.hwp.Copy()
+            time.sleep(self.settings["copyPasteDelay"]/2)
+            
+            self.ws.Activate()
+            if self.excel.ClipboardFormats:
+                self.excel.ActiveSheet.Paste()
+                logging.info(f"Paste Successful. current Page: {self.current_page}")
+            else:
+                logging.warning(f"Paste failed - nothing on Clipboard. current Page : {self.current_page}")
+                raise Exception("Paste failed: Nothing on Clipboard.")
+        except Exception as e :
+            logging.error(f"Error in copy_paste: {e}")
+            raise
 
     def copy_paste_to_endpage(self, end_page, update_progress_callback):
         if self.cancel_extraction:
             logging.info("Extraction cancelled before copy-paste")
             return
-        
         
         logging.info("Copy-Paste Started")
         while end_page > self.current_page:
@@ -212,6 +216,7 @@ class HwpConverter:
                     return
     
                 try:
+                    logging.info("get table row and offset")
                     self.hwp.HAction.Run("ShapeObjTableSelCell")
                     row_num = self.hwp.get_row_num()
                     self.hwp.HAction.Run("Cancel")
@@ -230,12 +235,15 @@ class HwpConverter:
     def rearrange_excel(self):
         try:
             logging.info("Started rearranging excel")
-            for sheet in self.wb.Sheets:
+            self.wb.Sheets(1).Select()
+            for sheet in self.wb.Worksheets:
                 used_range = sheet.UsedRange
                 rows = used_range.Rows.Count
                 columns = used_range.Columns.Count
+                print(sheet)
 
                 row = 1
+                print(row)
                 while row <= rows:
                     if all(sheet.Cells(row, col).Value is None for col in range(1, columns + 1)):
                         next_non_empty_row = row + 1
@@ -256,7 +264,7 @@ class HwpConverter:
                             return
                     else:
                         row += 1
-            self.wb.Sheets(1).Select()
+
         except Exception as e:
             logging.error(f"Re-arranging failed: {e}")
             raise Exception("Re-arranging Excel failed.")
@@ -270,7 +278,9 @@ class HwpConverter:
     
     def rearrange_demos(self) :
         try:
+            self.wb.Sheets(1).Select()
             for sheet in self.wb.Worksheets:
+                print(f"sheet {sheet} started rearraging demos")
                 used_range = sheet.UsedRange
                 total_used_row = used_range.Rows.Count
 
@@ -289,7 +299,7 @@ class HwpConverter:
                         
                         right_column = sheet.Range(sheet.Cells(row,table_column),sheet.Cells(row+table_row-1,table_column))
                         if all((not self.is_number(str(cell.Value))) or cell.Value is None for cell in right_column) :
-                            print("demo")
+
                             demo_value = right_column.Value
                             dest = sheet.Range(table.Offset(1,2),table.Offset(table_row,table_column+1))
                             dest.Value = table.Value
@@ -299,6 +309,7 @@ class HwpConverter:
                             
                         else:
                             pass
+                        
                         row += table_row
 
         except Exception as e:
@@ -316,6 +327,7 @@ class HwpConverter:
                 return
 
             update_progress_callback(status=f"Re-Trying extraction from page {self.current_page}...")
+            logging.info(f"trial {trial} has begun.")
             logging.info(f"Retrying extraction from page {self.current_page}")
             time.sleep(0.5)
             self.open_hwp_file()
@@ -348,18 +360,17 @@ class HwpConverter:
 
                 update_progress_callback(status=f"Moving to start page {initial_page}...")
                 self.go_to_start_page(initial_page)
-            try:
-                update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
-                logging.info(f"Exporting Pages {initial_page}~{end_page}")
-                self.copy_paste_to_endpage(end_page, update_progress_callback)
-            except Exception as e:
-                if trial != 3 :
-                    logging.error(f"Retry failed #{trial}: {e}")
-                    pass
-                else:
-                    logging.error(f"Retry failed #{trial}: {e}")
-                    update_progress_callback(status="Failed Resuming... Please Retry extracting.")
-                    raise Exception("Failed Resuming... Please Retry extracting.")
+                try:
+                    update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
+                    logging.info(f"Exporting Pages {initial_page}~{end_page}")
+                    self.copy_paste_to_endpage(end_page, update_progress_callback)
+                except Exception as e:
+                    if trial != 3 :
+                        logging.error(f"Retry failed #{trial}: {e}")
+                    else:
+                        logging.error(f"Retry failed #{trial}: {e}")
+                        update_progress_callback(status="Failed Resuming... Please Retry extracting.")
+                        raise Exception("Failed Resuming... Please Retry extracting.")
         
     def prepare_extraction(self):
         self.reset_state()
@@ -394,15 +405,17 @@ class HwpConverter:
 
             update_progress_callback(status=f"Moving to start page {initial_page}...")
             self.go_to_start_page(initial_page)
-        try:
-            update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
-            logging.info(f"Exporting Pages {initial_page}~{end_page}")
-            self.copy_paste_to_endpage(end_page, update_progress_callback)
-        except:
-            self.resume_extraction(range_list,update_progress_callback)
+            try:
+                update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
+                logging.info(f"Exporting Pages {initial_page}~{end_page}")
+                self.copy_paste_to_endpage(end_page, update_progress_callback)
+            except Exception as e:
+                logging.error(f"Error: {e}, restarting extraction.")
+                self.resume_extraction(range_list,update_progress_callback)
             
         if self.wb != None : 
             self.wb.Save()
+            logging.info("excel temp save")
 
         if not self.cancel_extraction:
             update_progress_callback(status="Rearranging Excel...")
