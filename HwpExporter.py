@@ -394,12 +394,12 @@ class HwpConverter:
 
             update_progress_callback(status=f"Moving to start page {initial_page}...")
             self.go_to_start_page(initial_page)
-        try:
-            update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
-            logging.info(f"Exporting Pages {initial_page}~{end_page}")
-            self.copy_paste_to_endpage(end_page, update_progress_callback)
-        except:
-            self.resume_extraction(range_list,update_progress_callback)
+            try:
+                update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
+                logging.info(f"Exporting Pages {initial_page}~{end_page}")
+                self.copy_paste_to_endpage(end_page, update_progress_callback)
+            except:
+                self.resume_extraction(range_list,update_progress_callback)
             
         if self.wb != None : 
             self.wb.Save()
