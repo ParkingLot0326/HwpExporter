@@ -21,7 +21,8 @@ DEFAULT_SETTINGS = {
     "isHwpVisible": True,
     "doOpenHwp": True,
     "doOpenXlsx": True,
-    "copyPasteDelay" : 0.1
+    "copyPasteDelay" : 0.1,
+    "retryLife" : 3,
 }
 
 class HwpConverter:
@@ -94,6 +95,7 @@ class HwpConverter:
         logging.info("hwp closed.")
 
     def open_excel_file(self):
+        logging.info("open_excel_file executed;")
         try:
             self.close_excel_file()
             save_file = (self.export_path + "/" + self.filename +"_변환됨" + ".xlsx").replace("/","\\")
@@ -111,15 +113,18 @@ class HwpConverter:
             raise Exception("Opening Excel failed.")
     
     def close_excel_file(self):
+        logging.info("closing excel..")
         if hasattr(self, 'wb') and self.wb:
             try:
                 self.wb.Close(SaveChanges=True)
-            except:
+            except Exception as e:
+                logging.error("exception ocurred in closing excel #1 : " + e)
                 pass  # If there's an error closing the workbook, continue to close Excel
         if hasattr(self, 'excel') and self.excel:
             try:
                 self.excel.Quit()
-            except:
+            except Exception as e:
+                logging.error("exception ocurred in closing excel #2 : " + e)
                 pass  # If there's an error quitting Excel, we've done our best
         self.wb = None
         self.excel = None
@@ -240,10 +245,9 @@ class HwpConverter:
                 used_range = sheet.UsedRange
                 rows = used_range.Rows.Count
                 columns = used_range.Columns.Count
-                print(sheet)
 
                 row = 1
-                print(row)
+                
                 while row <= rows:
                     if all(sheet.Cells(row, col).Value is None for col in range(1, columns + 1)):
                         next_non_empty_row = row + 1
@@ -280,7 +284,7 @@ class HwpConverter:
         try:
             self.wb.Sheets(1).Select()
             for sheet in self.wb.Worksheets:
-                print(f"sheet {sheet} started rearraging demos")
+                logging.info(f"sheet {sheet} started rearraging demos")
                 used_range = sheet.UsedRange
                 total_used_row = used_range.Rows.Count
 
@@ -316,11 +320,11 @@ class HwpConverter:
             logging.error(f"Re-arranging Demo failed: {e}")
             raise Exception("Re-arranging Excel failed.")
         
-
     def resume_extraction(self, range_list, update_progress_callback):
-        for trial in range(1,4):
+        for trial in range(1,self.settings["retryLife"]+1):
             self.wb.Save()
             self.close_hwp_file()
+            self.open_excel_file()
 
             if self.cancel_extraction:
                 logging.info("Extraction cancelled during resume_extraction")
@@ -365,7 +369,7 @@ class HwpConverter:
                     logging.info(f"Exporting Pages {initial_page}~{end_page}")
                     self.copy_paste_to_endpage(end_page, update_progress_callback)
                 except Exception as e:
-                    if trial != 3 :
+                    if trial != self.settings["retryLife"] :
                         logging.error(f"Retry failed #{trial}: {e}")
                     else:
                         logging.error(f"Retry failed #{trial}: {e}")
@@ -403,9 +407,9 @@ class HwpConverter:
             update_progress_callback(status=f"Extracting sheets...{i//2 + 1}/{(len(range_list)+1)//2}")
             logging.info(f"Extracting Sheet #{i//2+1}")
 
-            update_progress_callback(status=f"Moving to start page {initial_page}...")
-            self.go_to_start_page(initial_page)
             try:
+                update_progress_callback(status=f"Moving to start page {initial_page}...")
+                self.go_to_start_page(initial_page)
                 update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
                 logging.info(f"Exporting Pages {initial_page}~{end_page}")
                 self.copy_paste_to_endpage(end_page, update_progress_callback)
@@ -520,9 +524,14 @@ class GUI:
         ttk.Checkbutton(self.tab2, text="실행 후 엑셀 파일을 엽니다.", variable=self.do_open_xlsx).place(x=10, y=50)
 
         self.copy_paste_delay = tk.StringVar(value=str(self.converter.settings['copyPasteDelay']))
-        ttk.Spinbox(self.tab2,from_= 0, to=1,increment=0.05, wrap=True, textvariable=self.copy_paste_delay ).place(x=60,y=100)
+        ttk.Spinbox(self.tab2,from_= 0, to=1,increment=0.05, wrap=True, textvariable=self.copy_paste_delay ).place(x=100,y=100)
 
         ttk.Label(self.tab2, text="딜레이").place(x=10,y=100)
+
+        self.retry_life = tk.StringVar(value=str(self.converter.settings['retryLife']))
+        ttk.Spinbox(self.tab2,from_=1,to=10,increment=1,wrap=True,textvariable=self.retry_life).place(x=100,y=130)
+
+        ttk.Label(self.tab2,text="재시도 횟수").place(x=10,y=130)
 
         ttk.Button(self.tab2, text="저장", command=self.save_settings).place(x=400, y=200, width=80, height=30)
 
@@ -566,6 +575,7 @@ class GUI:
         self.converter.settings["doOpenHwp"] = bool(self.do_open_hwp.get())
         self.converter.settings["doOpenXlsx"] = bool(self.do_open_xlsx.get())
         self.converter.settings["copyPasteDelay"] = float(self.copy_paste_delay.get())
+        self.converter.settings["retryLife"] = int(self.retry_life.get())
         self.converter.save_settings()
 
     def toggle_extraction(self):
@@ -583,7 +593,6 @@ class GUI:
         self.extract_btn.config(state="normal")
 
     def cancel_extraction(self):
-        print("cancel")
         if self.extraction_thread and self.extraction_thread.is_alive():
             self.is_extracting = False
             self.converter.cancel_extraction = True
