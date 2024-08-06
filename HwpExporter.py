@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 # Constants
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 IS_STABLE = False
 
 DATA_DIR = "data"
