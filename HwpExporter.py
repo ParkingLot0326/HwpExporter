@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 # Constants
-VERSION = "0.1.4"
+VERSION = "0.1.4b"
 IS_STABLE = False
 
 DATA_DIR = "data"
@@ -109,23 +109,27 @@ class HwpConverter:
             self.wb = self.excel.Workbooks.Open(save_file)
             logging.info("Excel opened.")
         except Exception as e:
-            logging.error(f"Creating New Excel file failed : {e}")
+            logging.error("Creating New Excel file failed : " + e)
+            logging.error(e)
             raise Exception("Opening Excel failed.")
     
     def close_excel_file(self):
         logging.info("closing excel..")
-        if hasattr(self, 'wb') and self.wb:
-            try:
-                self.wb.Close(SaveChanges=True)
-            except Exception as e:
-                logging.error("exception ocurred in closing excel #1 : " + e)
-                pass  # If there's an error closing the workbook, continue to close Excel
-        if hasattr(self, 'excel') and self.excel:
-            try:
-                self.excel.Quit()
-            except Exception as e:
-                logging.error("exception ocurred in closing excel #2 : " + e)
-                pass  # If there's an error quitting Excel, we've done our best
+        try:
+            if hasattr(self, 'wb') and self.wb:
+                try:
+                    self.wb.Close(SaveChanges=True)
+                except Exception as e:
+                    logging.error("exception ocurred in closing excel #1 : " + e)
+                    pass  # If there's an error closing the workbook, continue to close Excel
+            if hasattr(self, 'excel') and self.excel:
+                try:
+                    self.excel.Quit()
+                except Exception as e:
+                    logging.error("exception ocurred in closing excel #2 : " + e)
+                    pass  # If there's an error quitting Excel, we've done our best
+        except Exception as e:
+            logging.error("Unknown error")
         self.wb = None
         self.excel = None
         logging.info("excel closed.")
@@ -142,7 +146,7 @@ class HwpConverter:
         try:
             while self.current_page != initial_page and not self.cancel_extraction:
                 if self.current_page < initial_page:
-                    self.ctrl = self.ctrl.Next.Next.Next
+                    self.ctrl = self.ctrl.Next
                     if self.ctrl is None:
                         break
                     if self.ctrl.UserDesc == "표":
@@ -236,6 +240,8 @@ class HwpConverter:
             if self.cancel_extraction:
                 logging.info("Extraction Cancelled after processing a table")
                 return
+        if self.current_page > end_page:
+            return
 
     def rearrange_excel(self):
         try:
@@ -324,7 +330,6 @@ class HwpConverter:
         for trial in range(1,self.settings["retryLife"]+1):
             self.wb.Save()
             self.close_hwp_file()
-            self.open_excel_file()
 
             if self.cancel_extraction:
                 logging.info("Extraction cancelled during resume_extraction")
@@ -337,44 +342,47 @@ class HwpConverter:
             self.open_hwp_file()
             self.ctrl = self.hwp.HeadCtrl
 
-            current_range_index = next((i for i in range(0, len(range_list), 2) if range_list[i] <= self.current_page <= range_list[i+1]), None)
+            if range_list[-1] > self.current_page :
+                current_range_index = next((i for i in range(0, len(range_list), 2) if range_list[i] <= self.current_page <= range_list[i+1]), None)
 
-            adjusted_range_list = range_list[current_range_index:]
-            adjusted_range_list[0] = self.current_page
-            self.current_page = 1
-            logging.warning(f"adjusted range list : {adjusted_range_list}")
-            
-            self.row_index += 40
-            self.ws.Range(f"A{self.row_index}").Select()
-            for i in range(0, len(adjusted_range_list), 2):
-                if self.cancel_extraction:
-                    logging.info("Extraction cancelled during go_to_start_page")
-                    break
+                adjusted_range_list = range_list[current_range_index:]
+                adjusted_range_list[0] = self.current_page
+                self.current_page = 1
+                logging.warning(f"adjusted range list : {adjusted_range_list}")
+                
+                self.row_index += 40
+                self.ws.Range(f"A{self.row_index}").Select()
+                for i in range(0, len(adjusted_range_list), 2):
+                    if self.cancel_extraction:
+                        logging.info("Extraction cancelled during go_to_start_page")
+                        break
 
-                initial_page = adjusted_range_list[i]
-                end_page = adjusted_range_list[i+1] if i+1 < len(range_list) else 10000
+                    initial_page = adjusted_range_list[i]
+                    end_page = adjusted_range_list[i+1] if i+1 < len(range_list) else 10000
 
-                if i == 0:
-                    pass
-                else:
-                    self.ws = self.wb.Worksheets.Add()
-
-                update_progress_callback(status=f"Extracting sheets...{i//2 + 1}/{(len(adjusted_range_list)+1)//2}")
-                logging.info(f"Extracting Sheet #{i//2+1}")
-
-                update_progress_callback(status=f"Moving to start page {initial_page}...")
-                self.go_to_start_page(initial_page)
-                try:
-                    update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
-                    logging.info(f"Exporting Pages {initial_page}~{end_page}")
-                    self.copy_paste_to_endpage(end_page, update_progress_callback)
-                except Exception as e:
-                    if trial != self.settings["retryLife"] :
-                        logging.error(f"Retry failed #{trial}: {e}")
+                    if i == 0:
+                        pass
                     else:
-                        logging.error(f"Retry failed #{trial}: {e}")
-                        update_progress_callback(status="Failed Resuming... Please Retry extracting.")
-                        raise Exception("Failed Resuming... Please Retry extracting.")
+                        self.ws = self.wb.Worksheets.Add()
+
+                    update_progress_callback(status=f"Extracting sheets...{i//2 + 1}/{(len(adjusted_range_list)+1)//2}")
+                    logging.info(f"Extracting Sheet #{i//2+1}")
+
+                    update_progress_callback(status=f"Moving to start page {initial_page}...")
+                    try:
+                        self.go_to_start_page(initial_page)
+                        update_progress_callback(status=f"Exporting pages {initial_page} to {end_page}...")
+                        logging.info(f"Exporting Pages {initial_page}~{end_page}")
+                        self.copy_paste_to_endpage(end_page, update_progress_callback)
+                    except Exception as e:
+                        if trial != self.settings["retryLife"] :
+                            logging.error(f"Retry failed #{trial}: {e}")
+                            break
+                        else:
+                            logging.error(f"Retry failed #{trial}: {e}")
+                            update_progress_callback(status="Failed Resuming... Please Retry extracting.")
+                            raise Exception("Failed Resuming... Please Retry extracting.")
+            break
         
     def prepare_extraction(self):
         self.reset_state()
