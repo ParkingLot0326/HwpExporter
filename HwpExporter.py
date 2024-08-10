@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 # Constants
-VERSION = "0.1.5"
+VERSION = "0.2.1"
 IS_STABLE = True
 
 DATA_DIR = "data"
@@ -20,10 +20,12 @@ SETTINGS_FILE = os.path.join(DATA_DIR,'settings.json')
 LOG_FILE = os.path.join(DATA_DIR,'hwp_converter.log')
 DEFAULT_SETTINGS = {
     "isHwpVisible": True,
+    "isExcelVisible":True,
     "doOpenHwp": True,
     "doOpenXlsx": True,
-    "copyPasteDelay" : 0.1,
-    "retryLife" : 3,
+    "SPMode" : True,
+    "copyPasteDelay" : 0.2,
+    "retryLife" : 5,
 }
 
 class HwpConverter:
@@ -103,12 +105,11 @@ class HwpConverter:
             save_file = self.get_unique_filename(filename=save_file)
             
             self.excel = win32.gencache.EnsureDispatch("Excel.Application")
-            self.excel.Visible = True
             self.wb = self.excel.Workbooks.Add()
             self.wb.SaveAs(save_file)
             self.excel.Quit()
             self.wb = self.excel.Workbooks.Open(save_file)
-            self.excel.Visible = True
+            self.excel.Visible = not self.settings["isExcelVisible"]
             logging.info("Excel opened.")
         except Exception as e:
             logging.error(f"Creating New Excel file failed : {e}")
@@ -153,7 +154,6 @@ class HwpConverter:
                     if self.ctrl.UserDesc == "표":
                         self.hwp.SetPosBySet(self.ctrl.GetAnchorPos(0))
                         self.current_page = self.hwp.current_page
-                        logging.info(f"Current Page is: {self.current_page}")
                 else:
                     self.ctrl = self.ctrl.Prev
                     self.hwp.SetPosBySet(self.ctrl.GetAnchorPos(0))
@@ -163,7 +163,7 @@ class HwpConverter:
                     if self.temp_cur_page != self.temp_prev_page :
                         self.current_page = self.temp_cur_page
                         
-                    logging.info(f"Current Page is: {self.current_page}")
+                logging.info(f"Current Page is: {self.current_page}")
                 self.hwp.goto_page(self.current_page)
 
             if self.cancel_extraction:
@@ -171,6 +171,7 @@ class HwpConverter:
                 return
 
             logging.info(f"Moved to Start Page {self.current_page}")
+
         except Exception as e:
             logging.error(f"Failed while Moving to Start Page, current Page : {self.current_page}, E: {e}")
             raise Exception("Moving to Start page Failed.")
@@ -195,6 +196,24 @@ class HwpConverter:
             logging.error(f"Error in copy_paste: {e}")
             raise
 
+    def get_row_and_offset(self):
+        if self.cancel_extraction:
+            logging.info("Extraction cancelled before excel offset")
+            return
+
+        try:
+            logging.info("get table row and offset")
+            self.hwp.FindCtrl()
+            self.hwp.HAction.Run("ShapeObjTableSelCell")
+            row_num = self.hwp.get_row_num()
+            self.hwp.HAction.Run("Cancel")
+            self.row_index += row_num + 8
+            self.ws.Range(f"A{self.row_index}").Select()
+        except Exception as e:
+            logging.error(f"Row Calculation failed: {e}")
+            logging.warning(traceback.format_exc())
+            raise Exception("Error calculating rows")
+        
     def copy_paste_to_endpage(self, end_page, update_progress_callback):
         if self.cancel_extraction:
             logging.info("Extraction cancelled before copy-paste")
@@ -203,23 +222,30 @@ class HwpConverter:
         if self.current_page > end_page:
             logging.info("current page is bigger than end_page; ending copy-paste")
             return
+        
         while end_page >= self.current_page:
             logging.info("Copy-Paste Started")
+
             if self.cancel_extraction:
                 logging.info("Extraction cancelled during pre-copy")
-                break       
-            if self.ctrl is None:
                 break
+                   
+            if self.ctrl is None:
+                logging.info("Extraction Ended Reaching the End of Document")
+                break
+            
             if self.ctrl.CtrlID == "tbl":
                 if self.cancel_extraction:
                     logging.info("Extraction cancelled during copy_paste_to_endpage")
                     break
                 
                 try:
-                    self.copy_paste_action() #페이지 지정
+                    self.copy_paste_action()
+
                     self.exported_pages += 1
                     progress = (self.exported_pages / self.total_pages) * 100
                     update_progress_callback(progress=progress, status=f"Exporting page {self.current_page}...")
+                
                 except Exception as e:
                     logging.error(f"Copy-Paste failed: {e}")
                     time.sleep(0.3)
@@ -229,19 +255,7 @@ class HwpConverter:
                     logging.info("Extraction cancelled before excel offset")
                     return
 
-                try:
-                    logging.info("get table row and offset")
-                    self.hwp.FindCtrl()
-                    self.hwp.HAction.Run("ShapeObjTableSelCell")
-                    row_num = self.hwp.get_row_num()
-                    self.hwp.HAction.Run("Cancel")
-                    self.row_index += row_num + 8
-                    self.ws.Range(f"A{self.row_index}").Select()
-                except Exception as e:
-                    logging.error(f"Row Calculation failed: {e}")
-                    logging.warning(traceback.format_exc())
-                    # self.close_excel_file()
-                    raise Exception("Error calculating rows")
+                self.get_row_and_offset()
             
             self.ctrl = self.ctrl.Next  
             self.hwp.SetPosBySet(self.ctrl.GetAnchorPos(0))
@@ -252,92 +266,224 @@ class HwpConverter:
                 logging.info("Extraction Cancelled after processing a table")
                 return
         logging.info("while loop in copy_paste_to_endpage ended")
-        
-
-    def rearrange_excel(self):
-        try:
-            logging.info("Started rearranging excel")
-            self.wb.Sheets(1).Select()
-            for sheet in self.wb.Worksheets:
-                logging.info(f"sheet {sheet} started rearraging emptry rows")
-                used_range = sheet.UsedRange
-                rows = used_range.Rows.Count
-                columns = used_range.Columns.Count
-                row = 1
-                
-                while row <= rows:
-                    if all(sheet.Cells(row, col).Value is None for col in range(1, columns + 1)):
-                        next_non_empty_row = row + 1
-                        while next_non_empty_row <= rows and all(sheet.Cells(next_non_empty_row, col).Value is None for col in range(1, columns + 1)):
-                            next_non_empty_row += 1
-
-                        sheet.Rows(f"{row}:{next_non_empty_row - 1}").Delete(Shift=win32.constants.xlUp)
-                        sheet.Rows(row).Insert(Shift=win32.constants.xlDown)
-                        sheet.Rows(row).Insert(Shift=win32.constants.xlDown)
-
-                        rows -= (next_non_empty_row - row)
-                        rows += 2
-                        row += 2
-
-                        all_empty = all(all(sheet.Cells(check_row, col).Value is None for col in range(1, columns + 1)) for check_row in range(row, min(row + 10, rows + 1)))
-                        if all_empty:
-                            # sheet.Cells(1, 1).Select()
-                            break
-                    else:
-                        row += 1
-
-        except Exception as e:
-            logging.error(f"Re-arranging failed: {e}")
-            raise Exception("Re-arranging Excel failed.")
     
     def is_number(self,cell_value):
         try:
             float(cell_value)
             return True
         except:
-            return False
-    
-    def rearrange_demos(self) :
+            return False        
+
+    def rearrange_demos_and_shrink_rows(self):
         try:
-            self.wb.Sheets(1).Select()
             for sheet in self.wb.Worksheets:
-                logging.info(f"sheet {sheet} started rearraging demos")
                 used_range = sheet.UsedRange
                 total_used_row = used_range.Rows.Count
-
-                row = 1
-                while row <= total_used_row : 
-                    if sheet.Cells(row,1).Value is None :
-                        row += 1
-                    else:
-                        table = sheet.Cells(row,1).CurrentRegion                
-                        table_row = table.Rows.Count
-                        table_column = table.Columns.Count
+                total_used_column = used_range.Columns.Count
+                
+                if sheet == self.wb.Worksheets("Sheet1") and self.settings["SPMode"]:
+                    logging.info("Spliting first sheet")
+                    self.copy_sheet_and_delete_unnecessary(sheet)
+                    
+                else:
+                    row = 1
+                    while row <= total_used_row:
+                        if self.cancel_extraction:
+                            logging.warning("extraction canceled while rearranging excel")
+                            return
                         
-                        for cell in table :
-                            if cell.MergeCells:
-                                cell.UnMerge()
-                        
-                        right_column = sheet.Range(sheet.Cells(row,table_column),sheet.Cells(row+table_row-1,table_column))
-                        if all((not self.is_number(str(cell.Value))) or cell.Value is None for cell in right_column) :
-
-                            demo_value = right_column.Value
-                            dest = sheet.Range(table.Offset(1,2),table.Offset(table_row,table_column+1))
-                            dest.Value = table.Value
-                            new_demo = sheet.Range(table.Offset(1,1),table.Offset(table_row,1))
-                            new_demo.Value = demo_value
-                            sheet.Range(table.Offset(1,table_column+1),table.Offset(table_row,table_column+1)).Value = ""
+                        if sheet.Cells(row, 1).Value is None:
                             
-                        else:
-                            pass
-                        
-                        row += table_row
-            # sheet.Cells(1, 1).Select()
+                            if all(
+                                sheet.Cells(row, col).Value is None
+                                for col in range(1, total_used_column + 1)
+                            ):
+                                next_non_empty_row = row + 1
 
+                                while next_non_empty_row <= total_used_row and all(
+                                    sheet.Cells(next_non_empty_row, col).Value is None
+                                    for col in range(1, total_used_column + 1)
+                                ):
+                                    next_non_empty_row += 1
+
+                                sheet.Rows(f"{row}:{next_non_empty_row - 1}").Delete(
+                                    Shift=win32.constants.xlUp
+                                )
+
+                                sheet.Rows(row).Insert(Shift=win32.constants.xlDown)
+                                sheet.Rows(row).Insert(Shift=win32.constants.xlDown)
+
+                                total_used_row -= next_non_empty_row - row
+                                total_used_row += 2
+                                row += 2
+                            else:
+                                row += 1
+
+                            if all(
+                                all(
+                                    sheet.Cells(check_row, col).Value is None
+                                    for col in range(1, total_used_column + 1)
+                                )
+                                for check_row in range(
+                                    row, min(row + 5, total_used_row + 1)
+                                )
+                            ):
+                                break
+                        else:
+                            table = sheet.Cells(row, 1).CurrentRegion
+                            table_row = table.Rows.Count
+                            table_column = table.Columns.Count
+
+                            for cell in table:
+                                if cell.MergeCells:
+                                    cell.UnMerge()
+
+                            right_column = sheet.Range(
+                                sheet.Cells(row, table_column),
+                                sheet.Cells(row + table_row - 1, table_column),
+                            )
+                            
+                            if all(
+                                (not self.is_number(str(cell.Value))) or cell.Value is None
+                                for cell in right_column
+                            ):
+                                demo_value = right_column.Value
+                                dest = sheet.Range(
+                                    table.Offset(1, 2),
+                                    table.Offset(table_row, table_column + 1),
+                                )
+                                dest.Value = table.Value
+                                new_demo = sheet.Range(
+                                    table.Offset(1, 1), table.Offset(table_row, 1)
+                                )
+                                new_demo.Value = demo_value
+                                sheet.Range(
+                                    table.Offset(1, table_column + 1),
+                                    table.Offset(table_row, table_column + 1),
+                                ).Value = ""
+
+                            else:
+                                pass
+
+                            row += table_row
+                            
         except Exception as e:
-            logging.error(f"Re-arranging Demo failed: {e}")
-            raise Exception("Re-arranging Demo failed.")
+            logging.error("Error while arranging Excel")
+            logging.warning(traceback.format_exc())
+            raise Exception(f"Re-arranging Excel failed : {e}")
         
+    def copy_sheet_and_delete_unnecessary(self, sheet):
+        sheet.Copy(Before=sheet)
+        sheet1 = sheet
+        sheet2 = self.wb.Worksheets(f"{sheet.Name} (2)")
+        sheet1.Select()
+
+        for i in range(2):
+            if i == 0:
+                sheet = sheet1
+            else:
+                sheet = sheet2
+
+            # sheet.Select()
+            used_range = sheet.UsedRange
+            total_used_row = used_range.Rows.Count
+            total_used_column = used_range.Columns.Count
+
+            row = 1
+            while row <= total_used_row:
+                if self.cancel_extraction:
+                    logging.warning("extraction canceled while rearranging excel")
+                    return
+                
+                if sheet.Cells(row, 1).Value is None:
+                    
+                    if all(
+                        sheet.Cells(row, col).Value is None
+                        for col in range(1, total_used_column + 1)
+                    ):
+                        next_non_empty_row = row + 1
+
+                        while next_non_empty_row <= total_used_row and all(
+                            sheet.Cells(next_non_empty_row, col).Value is None
+                            for col in range(1, total_used_column + 1)
+                        ):
+                            next_non_empty_row += 1
+
+                        sheet.Rows(f"{row}:{next_non_empty_row - 1}").Delete(
+                            Shift=win32.constants.xlUp
+                        )
+
+                        sheet.Rows(row).Insert(Shift=win32.constants.xlDown)
+                        sheet.Rows(row).Insert(Shift=win32.constants.xlDown)
+
+                        total_used_row -= next_non_empty_row - row
+                        total_used_row += 2
+                        row += 2
+                    else:
+                        row += 1
+                    
+                    if all(
+                        all(
+                            sheet.Cells(check_row, col).Value is None
+                            for col in range(1, total_used_column + 1)
+                        )
+                        for check_row in range(
+                            row, min(row + 5, total_used_row + 1)
+                        )
+                    ) :
+                        break
+                else:
+                    table = sheet.Cells(row, 1).CurrentRegion
+                    table_row = table.Rows.Count
+                    table_column = table.Columns.Count
+
+                    for cell in table:
+                        if cell.MergeCells:
+                            cell.UnMerge()
+
+                    right_column = sheet.Range(
+                        sheet.Cells(row, table_column),
+                        sheet.Cells(row + table_row - 1, table_column),
+                    )
+
+                    if all(
+                        (not self.is_number(str(cell.Value))) or cell.Value is None
+                        for cell in right_column
+                    ):  # if demo is on right end
+                        if i == 0: # in sheet1
+                            sheet.Rows(f"{row}:{row + table_row}").Delete(
+                                Shift=win32.constants.xlDown
+                            )
+                            if row != 1:
+                                row -= 2
+                        else:
+                            row += table_row
+                            
+                            demo_value = right_column.Value
+                            dest = sheet.Range(
+                                table.Offset(1, 2),
+                                table.Offset(table_row, table_column + 1),
+                            )
+                            dest.Value = table.Value
+                            new_demo = sheet.Range(
+                                table.Offset(1, 1), table.Offset(table_row, 1)
+                            )
+                            new_demo.Value = demo_value
+                            sheet.Range(
+                                table.Offset(1, table_column + 1),
+                                table.Offset(table_row, table_column + 1),
+                            ).Value = ""
+                            
+                    else:
+                        if i == 1: # in sheet1-1
+                            sheet.Rows(f"{row}:{row + table_row}").Delete(
+                                Shift=win32.constants.xlDown
+                            )
+                            if row != 1:
+                                row -= 2
+                        else:
+                            row += table_row
+
     def resume_extraction(self, range_list, update_progress_callback):
         isRetryEnd = True
         for trial in range(1,self.settings["retryLife"]+1):
@@ -345,17 +491,17 @@ class HwpConverter:
                 self.wb.Save()
                 
             if self.cancel_extraction:
-                logging.info("Extraction cancelled during resume_extraction")
+                logging.warning("Extraction cancelled during resume_extraction")
                 return
 
             if range_list[-1] > self.current_page :
                 update_progress_callback(status=f"Re-Trying extraction from page {self.current_page}...")
                 logging.info(f"trial {trial} has begun.")
                 logging.info(f"Retrying extraction from page {self.current_page}")
+
                 self.close_hwp_file()
                 self.open_hwp_file()
                 time.sleep(0.5)
-                # self.open_excel_file()
                 self.ctrl = self.hwp.HeadCtrl
 
                 current_range_index = next((i for i in range(0, len(range_list), 2) if range_list[i] <= self.current_page <= range_list[i+1]), None)
@@ -369,7 +515,7 @@ class HwpConverter:
                 self.ws.Range(f"A{self.row_index}").Select()
                 for i in range(0, len(adjusted_range_list), 2):
                     if self.cancel_extraction:
-                        logging.info("Extraction cancelled during go_to_start_page")
+                        logging.warning("Extraction cancelled during go_to_start_page")
                         break
 
                     initial_page = adjusted_range_list[i]
@@ -407,7 +553,7 @@ class HwpConverter:
             else:
                 logging.info("retry ended. returning.")
                 return
-        
+
     def prepare_extraction(self):
         self.reset_state()
         self.open_hwp_file()
@@ -425,8 +571,9 @@ class HwpConverter:
 
         for i in range(0, len(range_list), 2):
             logging.info(f"i : {i}")
+
             if self.cancel_extraction:
-                logging.info("Extraction cancelled by user")
+                logging.warning("Extraction cancelled by user")
                 break
             
             initial_page = range_list[i]
@@ -459,35 +606,35 @@ class HwpConverter:
             self.wb.Save()
             logging.info("excel temp save")
 
-        if not self.cancel_extraction:
-            update_progress_callback(status="Rearranging Excel...")
-            self.rearrange_excel()
-            update_progress_callback(status="Rearranging Demo...")
-            self.rearrange_demos()
-            self.wb.Save()
-            logging.info("Exportation Successful.")
-            update_progress_callback(progress=100, status="Export Completed.")
-        else:
-            self.close_excel_file()
-            logging.info("Extraction cancelled, partial results saved.")
-            
-        if not self.cancel_extraction : 
-            if self.settings["doOpenHwp"]:
-                if self.hwp:
-                    self.hwp.set_visible(visible=True)
-                else:
-                    self.open_hwp_file
-                    self.hwp.set_visible(visible=True)
-            else:
-                self.close_hwp_file()            
-
-            if self.settings["doOpenXlsx"]:
-                self.excel.Visible = True
-            else:
-                self.close_excel_file()
-
         self.current_page = 1
         logging.info("Page Resetted to 1")
+
+        if self.cancel_extraction:
+            if self.wb:
+                self.wb.Save()
+            self.close_excel_file()
+            logging.info("Extraction cancelled, partial results saved.")
+            return
+            
+        update_progress_callback(status="Rearranging Excel...")
+        self.rearrange_demos_and_shrink_rows()
+        self.wb.Save()
+        logging.info("Exportation Successful.")
+        update_progress_callback(progress=100, status="Export Completed.")    
+        
+        if self.settings["doOpenHwp"]:
+            if self.hwp:
+                self.hwp.set_visible(visible=True)
+            else:
+                self.open_hwp_file
+                self.hwp.set_visible(visible=True)
+        else:
+            self.close_hwp_file()            
+
+        if self.settings["doOpenXlsx"]:
+            self.excel.Visible = True
+        else:
+            self.close_excel_file()
 
 class GUI:
     def __init__(self, converter):
@@ -557,25 +704,31 @@ class GUI:
 
     def setup_settings_tab(self):
         self.is_hwp_visible = tk.IntVar(value=int(self.converter.settings['isHwpVisible']))
-        ttk.Checkbutton(self.tab2, text="한글 파일을 백그라운드에서 실행합니다 (unstable)", variable=self.is_hwp_visible).place(x=10, y=10)
-
+        ttk.Checkbutton(self.tab2, text="한글 파일을 백그라운드에서 실행합니다.", variable=self.is_hwp_visible).place(x=10, y=10)
+        
+        self.is_excel_visible = tk.IntVar(value=int(self.converter.settings['isExcelVisible']))
+        ttk.Checkbutton(self.tab2, text="엑셀 파일을 백그라운드에서 실행합니다.",variable = self.is_excel_visible).place(x=10,y=30)
+        
         self.do_open_hwp = tk.IntVar(value=int(self.converter.settings['doOpenHwp']))
-        ttk.Checkbutton(self.tab2, text="실행 후 한글 파일을 엽니다.", variable=self.do_open_hwp).place(x=10, y=30)
+        ttk.Checkbutton(self.tab2, text="실행 후 한글 파일을 엽니다.", variable=self.do_open_hwp).place(x=10, y=50)
 
         self.do_open_xlsx = tk.IntVar(value=int(self.converter.settings['doOpenXlsx']))
-        ttk.Checkbutton(self.tab2, text="실행 후 엑셀 파일을 엽니다.", variable=self.do_open_xlsx).place(x=10, y=50)
+        ttk.Checkbutton(self.tab2, text="실행 후 엑셀 파일을 엽니다.", variable=self.do_open_xlsx).place(x=10, y=70)
+        
+        self.special_mode = tk.IntVar(value=int(self.converter.settings['SPMode']))
+        ttk.Checkbutton(self.tab2, text="첫 번째 시트를 데모의 위치에 따라 분리합니다.", variable=self.special_mode).place(x=10,y=90)
 
         self.copy_paste_delay = tk.StringVar(value=str(self.converter.settings['copyPasteDelay']))
-        ttk.Spinbox(self.tab2,from_= 0, to=1,increment=0.05, wrap=True, textvariable=self.copy_paste_delay ).place(x=100,y=100)
+        ttk.Spinbox(self.tab2,from_= 0, to=1,increment=0.05, wrap=True, textvariable=self.copy_paste_delay ).place(x=100,y=130)
 
-        ttk.Label(self.tab2, text="딜레이").place(x=10,y=100)
+        ttk.Label(self.tab2, text="딜레이").place(x=10,y=130)
 
         self.retry_life = tk.StringVar(value=str(self.converter.settings['retryLife']))
-        ttk.Spinbox(self.tab2,from_=1,to=10,increment=1,wrap=True,textvariable=self.retry_life).place(x=100,y=130)
+        ttk.Spinbox(self.tab2,from_=1,to=10,increment=1,wrap=True,textvariable=self.retry_life).place(x=100,y=155)
 
-        ttk.Label(self.tab2,text="재시도 횟수").place(x=10,y=130)
+        ttk.Label(self.tab2,text="재시도 횟수").place(x=10,y=155)
 
-        ttk.Button(self.tab2, text="저장", command=self.save_settings).place(x=400, y=200, width=80, height=30)
+        ttk.Button(self.tab2, text="저장", command=self.save_settings).place(x=390, y=190, width=80, height=40)
 
     def ask_file(self):
         self.converter.file = filedialog.askopenfilename(
@@ -587,6 +740,9 @@ class GUI:
         self.hwp_entry.configure(foreground="gray")
         self.converter.filename = os.path.splitext(os.path.basename(self.converter.file))[0]
         self.file_name_text.set(f"{self.converter.filename}_변환됨.xlsx")
+        
+    def get_filename(self):
+        self.converter.filename = self.file_name_text.get()
 
     def get_export_path(self):
         self.converter.export_path = filedialog.askdirectory(
@@ -611,11 +767,13 @@ class GUI:
             return [int(k) for k in re.split('[:,.~ ]', range_str) if k]
         except ValueError:
             raise Exception("invalid Datatype.")
-
+        
     def save_settings(self):
         self.converter.settings["isHwpVisible"] = bool(self.is_hwp_visible.get())
+        self.converter.settings["isExcelVisible"] = bool(self.is_excel_visible.get())
         self.converter.settings["doOpenHwp"] = bool(self.do_open_hwp.get())
         self.converter.settings["doOpenXlsx"] = bool(self.do_open_xlsx.get())
+        self.converter.settings["SPMode"] = bool(self.special_mode.get())
         self.converter.settings["copyPasteDelay"] = float(self.copy_paste_delay.get())
         self.converter.settings["retryLife"] = int(self.retry_life.get())
         self.converter.save_settings()
@@ -649,6 +807,7 @@ class GUI:
 
     def run_extraction(self):
         try:
+            self.get_filename()
             range_list = self.get_page_range()
             self.update_progress(progress=0, status="Starting extraction process...")
             self.converter.extract_tables(range_list, self.update_progress)
