@@ -101,7 +101,7 @@ class HwpConverter:
         logging.info("open_excel_file executed;")
         try:
             self.close_excel_file()
-            save_file = (self.export_path + "/" + self.filename +"_변환됨" + ".xlsx").replace("/","\\")
+            save_file = (self.export_path + "/" + self.filename).replace("/","\\")
             save_file = self.get_unique_filename(filename=save_file)
             
             self.excel = win32.gencache.EnsureDispatch("Excel.Application")
@@ -344,7 +344,7 @@ class HwpConverter:
                             )
                             
                             if all(
-                                (not self.is_number(str(cell.Value))) or cell.Value is None
+                                cell.Value is None or (not self.is_number(str(cell.Value)) and str(cell.Value) != "-")
                                 for cell in right_column
                             ):
                                 demo_value = right_column.Value
@@ -447,7 +447,7 @@ class HwpConverter:
                     )
 
                     if all(
-                        (not self.is_number(str(cell.Value))) or cell.Value is None
+                        cell.Value is None or (not self.is_number(str(cell.Value)) and str(cell.Value) != "-")
                         for cell in right_column
                     ):  # if demo is on right end
                         if i == 0: # in sheet1
